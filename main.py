@@ -38,19 +38,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 # ── Pydantic Schemas ──────────────────────────────────────
 class RegisterRequest(BaseModel):
-    username:     str
-    email:        str
-    password:     str
-    first_name:   Optional[str] = ""
+    username:   str
+    email:      str
+    password:   str
+    first_name: Optional[str] = ""
     income_type:  Optional[str] = "other"
     income_cycle: Optional[str] = "monthly"
-
-class ProfileUpdate(BaseModel):
-    income_amount: Optional[float] = None
-    savings_goal:  Optional[float] = None
-    income_type:   Optional[str]   = None 
-    income_cycle:  Optional[str]   = None
-
 
 class ExpenseCreate(BaseModel):
     amount:       float
@@ -58,11 +51,9 @@ class ExpenseCreate(BaseModel):
     description:  Optional[str] = ""
     timestamp:    str
 
-
 class ExpenseUpdate(BaseModel):
     amount:      Optional[float] = None
     description: Optional[str]  = None
-
 
 class SavingsGoalCreate(BaseModel):
     name:           str
@@ -73,6 +64,17 @@ class SavingsGoalCreate(BaseModel):
 class SavingsGoalUpdate(BaseModel):
     current_amount: Optional[float] = None
     name:           Optional[str]   = None
+
+class ProfileUpdate(BaseModel):
+    income_amount: Optional[float] = None
+    savings_goal:  Optional[float] = None
+    income_type:   Optional[str]   = None
+    income_cycle:  Optional[str]   = None
+
+class SmartPurchaseRequest(BaseModel):
+    amount:      float
+    category:    str
+    description: Optional[str] = ""
 
 # ── Helper functions ──────────────────────────────────────
 def hash_password(password: str):
@@ -119,27 +121,6 @@ def seed_categories(db: Session):
         ]
         db.add_all(categories)
         db.commit()
-
-# ── PROFILE ───────────────────────────────────────────────
-@app.patch("/profile")
-def update_profile(
-    data:         ProfileUpdate,
-    current_user: models.User = Depends(get_current_user),
-    db:           Session     = Depends(get_db)
-):
-    user = db.query(models.User).filter(models.User.id == current_user.id).first()
-    if data.income_amount is not None: user.income_amount = data.income_amount
-    if data.savings_goal  is not None: user.savings_goal  = data.savings_goal
-    if data.income_type   is not None: user.income_type   = data.income_type
-    if data.income_cycle  is not None: user.income_cycle  = data.income_cycle
-    db.commit()
-    db.refresh(user)
-    return {
-        "income_amount": user.income_amount,
-        "savings_goal":  user.savings_goal,
-        "income_type":   user.income_type,
-        "income_cycle":  user.income_cycle,
-    }
 
 # ── Startup ───────────────────────────────────────────────
 @app.on_event("startup")
@@ -188,15 +169,26 @@ def register(data: RegisterRequest, db: Session = Depends(get_db)):
         "first_name": user.first_name,
     }
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 @app.post("/auth/login")
 def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    data: LoginRequest,
     db: Session = Depends(get_db)
 ):
+    # Check by username first, then by email
     user = db.query(models.User).filter(
-        models.User.username == form_data.username
+        models.User.username == data.username
     ).first()
-    if not user or not verify_password(form_data.password, user.hashed_password):
+
+    if not user:
+        user = db.query(models.User).filter(
+            models.User.email == data.username
+        ).first()
+
+    if not user or not verify_password(data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     token = create_token({"sub": user.username})
@@ -208,22 +200,45 @@ def login(
             "username":   user.username,
             "email":      user.email,
             "first_name": user.first_name,
+            "is_admin":   user.is_admin,
         }
     }
 
 @app.get("/auth/me")
 def me(current_user: models.User = Depends(get_current_user)):
     return {
-        "id":           current_user.id,
-        "username":     current_user.username,
-        "email":        current_user.email,
-        "first_name":   current_user.first_name,
-        "income_type":  current_user.income_type,
-        "income_cycle": current_user.income_cycle,
+        "id":            current_user.id,
+        "username":      current_user.username,
+        "email":         current_user.email,
+        "first_name":    current_user.first_name,
+        "income_type":   current_user.income_type,
+        "income_cycle":  current_user.income_cycle,
         "income_amount": current_user.income_amount,
-        "savings_goal": current_user.savings_goal,
+        "savings_goal":  current_user.savings_goal,
+        "is_admin":      current_user.is_admin,  # ← ADD THIS
     }
-    
+
+# ── PROFILE ───────────────────────────────────────────────
+@app.patch("/profile")
+def update_profile(
+    data:         ProfileUpdate,
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    user = db.query(models.User).filter(models.User.id == current_user.id).first()
+    if data.income_amount is not None: user.income_amount = data.income_amount
+    if data.savings_goal  is not None: user.savings_goal  = data.savings_goal
+    if data.income_type   is not None: user.income_type   = data.income_type
+    if data.income_cycle  is not None: user.income_cycle  = data.income_cycle
+    db.commit()
+    db.refresh(user)
+    return {
+        "income_amount": user.income_amount,
+        "savings_goal":  user.savings_goal,
+        "income_type":   user.income_type,
+        "income_cycle":  user.income_cycle,
+    }
+
 # ── CATEGORIES ────────────────────────────────────────────
 @app.get("/categories")
 def get_categories(db: Session = Depends(get_db)):
@@ -285,6 +300,33 @@ def create_expense(
         "message":     "Expense created successfully"
     }
 
+@app.get("/expenses/stats")
+def get_expense_stats(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    expenses = db.query(models.Expense).filter(
+        models.Expense.user_id == current_user.id
+    ).all()
+
+    total_expenses = sum(e.amount for e in expenses)
+    income         = current_user.income_amount or 0
+    balance        = income - total_expenses
+
+    breakdown = {}
+    for e in expenses:
+        key = e.category.key if e.category else "other"
+        breakdown[key] = breakdown.get(key, 0) + e.amount
+
+    return {
+        "total_expenses":      total_expenses,
+        "total_income":        income,
+        "balance":             balance,
+        "average_daily_spend": round(total_expenses / 30, 2),
+        "days_remaining":      14,
+        "category_breakdown":  breakdown,
+    }
+
 @app.patch("/expenses/{expense_id}")
 def update_expense(
     expense_id:   int,
@@ -321,7 +363,7 @@ def delete_expense(
     db.delete(expense)
     db.commit()
 
-    # ── DASHBOARD ─────────────────────────────────────────────
+# ── DASHBOARD ─────────────────────────────────────────────
 @app.get("/dashboard")
 def dashboard(
     current_user: models.User = Depends(get_current_user),
@@ -420,3 +462,106 @@ def get_alerts(
     return db.query(models.Alert).filter(
         models.Alert.user_id == current_user.id
     ).order_by(models.Alert.created_at.desc()).all()
+
+# ── INSIGHTS ──────────────────────────────────────────────
+@app.get("/insights")
+def get_insights(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    insight = db.query(models.MLInsight).filter(
+        models.MLInsight.user_id == current_user.id
+    ).first()
+    if not insight:
+        raise HTTPException(status_code=404, detail="No insights found")
+    return {
+        "user_cluster":        insight.user_cluster,
+        "cluster_description": insight.cluster_description,
+        "daily_burn_rate":     insight.daily_burn_rate,
+        "days_remaining":      insight.days_remaining,
+        "risk_level":          insight.risk_level,
+        "model_accuracy":      insight.model_accuracy,
+        "prediction":          insight.prediction,
+        "last_updated":        insight.last_updated,
+    }
+
+# ── SMART PURCHASE ────────────────────────────────────────
+@app.post("/smart-purchase")
+def smart_purchase(
+    data:         SmartPurchaseRequest,
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    expenses = db.query(models.Expense).filter(
+        models.Expense.user_id == current_user.id
+    ).all()
+    total_expenses    = sum(e.amount for e in expenses)
+    income            = current_user.income_amount or 0
+    balance           = income - total_expenses
+    safe_threshold    = balance * 0.10
+    caution_threshold = balance * 0.25
+    amount            = data.amount
+
+    if balance <= 0:
+        decision, risk_score = "risky", 100
+        reasoning   = f"Your balance is ₱{balance:,.2f}. Any purchase is not recommended."
+        suggestions = ["You have no remaining budget.", "Wait for your next income cycle."]
+    elif amount <= safe_threshold:
+        decision   = "safe"
+        risk_score = int((amount / safe_threshold) * 30) if safe_threshold > 0 else 0
+        reasoning  = f"₱{amount:,.2f} is within your safe range based on balance of ₱{balance:,.2f}."
+        suggestions = ["You can proceed.", "Log it immediately after buying."]
+    elif amount <= caution_threshold:
+        decision   = "caution"
+        risk_score = int(30 + ((amount - safe_threshold) / (caution_threshold - safe_threshold)) * 40)
+        reasoning  = f"₱{amount:,.2f} is manageable but uses a significant portion of your ₱{balance:,.2f} balance."
+        suggestions = ["Only proceed if priority.", "Look for a lower-cost alternative."]
+    else:
+        decision   = "risky"
+        risk_score = min(100, int(70 + ((amount - caution_threshold) / max(caution_threshold, 1)) * 30))
+        reasoning  = f"₱{amount:,.2f} exceeds 25% of your balance of ₱{balance:,.2f}."
+        suggestions = ["Defer until next pay cycle.", "Review spending breakdown first."]
+
+    return {
+        "decision":          decision,
+        "risk_score":        risk_score,
+        "reasoning":         reasoning,
+        "suggestions":       suggestions,
+        "current_balance":   balance,
+        "remaining_budget":  balance - amount,
+        "safe_threshold":    safe_threshold,
+        "caution_threshold": caution_threshold,
+    }
+
+# ── ADMIN ─────────────────────────────────────────────────
+@app.get("/admin/users")
+def admin_users(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    users = db.query(models.User).all()
+    return [{
+        "id":           u.id,
+        "username":     u.username,
+        "email":        u.email,
+        "name":         u.first_name,
+        "income_type":  u.income_type,
+        "income_cycle": u.income_cycle,
+        "date_joined":  u.created_at,
+    } for u in users]
+
+@app.get("/admin/dashboard")
+def admin_dashboard(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    total_users    = db.query(models.User).count()
+    total_expenses = sum(e.amount for e in db.query(models.Expense).all())
+    return {
+        "total_users":    total_users,
+        "total_expenses": total_expenses,
+    }
