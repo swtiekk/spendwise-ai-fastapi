@@ -16,7 +16,8 @@ models.Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="SpendWise AI - FastAPI Backend",
     description="Backend API for SpendWise AI mobile and web app",
-    version="1.0.0"
+    version="1.0.0",
+    redirect_slashes=False,
 )
 
 # ── CORS ──────────────────────────────────────────────────
@@ -219,6 +220,26 @@ def me(current_user: models.User = Depends(get_current_user)):
     }
 
 # ── PROFILE ───────────────────────────────────────────────
+
+@app.get("/profile")
+def get_profile(
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    This allows the mobile app to GET the user's data 
+    to display it on the profile screen.
+    """
+    return {
+        "id": current_user.id,
+        "username": current_user.username,
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "income_amount": current_user.income_amount,
+        "savings_goal": current_user.savings_goal,
+        "income_type": current_user.income_type,
+        "income_cycle": current_user.income_cycle,
+    }
+
 @app.patch("/profile")
 def update_profile(
     data:         ProfileUpdate,
@@ -565,3 +586,222 @@ def admin_dashboard(
         "total_users":    total_users,
         "total_expenses": total_expenses,
     }
+
+@app.get("/admin/ml-insights")
+def admin_ml_insights(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    users    = db.query(models.User).all()
+    expenses = db.query(models.Expense).all()
+
+    total_users    = len(users)
+    total_expenses = sum(e.amount for e in expenses)
+    avg_income     = sum(u.income_amount or 0 for u in users) / max(total_users, 1)
+
+    # Category breakdown across all users
+    category_breakdown = {}
+    for e in expenses:
+        key   = e.category.key   if e.category else "other"
+        label = e.category.label if e.category else "Other"
+        if key not in category_breakdown:
+            category_breakdown[key] = {"key": key, "label": label, "total": 0, "count": 0}
+        category_breakdown[key]["total"] += e.amount
+        category_breakdown[key]["count"] += 1
+
+    category_data = sorted(category_breakdown.values(), key=lambda x: x["total"], reverse=True)
+
+    # Per-user stats for prediction data
+    prediction_data = []
+    for u in users:
+        user_expenses = [e.amount for e in expenses if e.user_id == u.id]
+        total_spent   = sum(user_expenses)
+        income        = u.income_amount or 0
+        prediction_data.append({
+            "user":      u.username,
+            "actual":    round(total_spent, 2),
+            "predicted": round(income * 0.75, 2),  # placeholder prediction
+            "income":    income,
+        })
+
+    # Top flagged users (spent > 80% of income)
+    top_flagged = []
+    for u in users:
+        user_expenses = sum(e.amount for e in expenses if e.user_id == u.id)
+        income        = u.income_amount or 1
+        ratio         = user_expenses / income if income > 0 else 0
+        if ratio > 0.5:
+            top_flagged.append({
+                "user":    u.username,
+                "amount":  round(user_expenses, 2),
+                "income":  income,
+                "ratio":   round(ratio * 100, 1),
+                "risk":    "high" if ratio > 0.9 else "medium" if ratio > 0.7 else "low",
+            })
+    top_flagged = sorted(top_flagged, key=lambda x: x["ratio"], reverse=True)[:10]
+
+    # ML metrics summary
+    ml_metrics = {
+        "total_users":     total_users,
+        "total_expenses":  round(total_expenses, 2),
+        "avg_income":      round(avg_income, 2),
+        "flagged_users":   len(top_flagged),
+        "category_data":   category_data,
+        "prediction_data": prediction_data,
+        "top_flagged":     top_flagged,
+    }
+
+    return ml_metrics
+
+
+@app.get("/admin/users-detail")
+def admin_users_detail(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    users    = db.query(models.User).all()
+    expenses = db.query(models.Expense).all()
+
+    result = []
+    for u in users:
+        user_expenses   = [e for e in expenses if e.user_id == u.id]
+        total_spent     = sum(e.amount for e in user_expenses)
+        income          = u.income_amount or 0
+        spending_ratio  = (total_spent / income * 100) if income > 0 else 0
+
+        result.append({
+            "id":            u.id,
+            "username":      u.username,
+            "email":         u.email,
+            "name":          u.first_name,
+            "income":        income,
+            "income_type":   u.income_type,
+            "income_cycle":  u.income_cycle,
+            "spent":         round(total_spent, 2),
+            "transactions":  len(user_expenses),
+            "spendingScore": round(spending_ratio, 1),
+            "date_joined":   u.created_at,
+        })
+
+    return result
+
+@app.get("/admin/clusters")
+def admin_clusters(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    users    = db.query(models.User).all()
+    expenses = db.query(models.Expense).all()
+
+    savers    = 0
+    balanced  = 0
+    impulsive = 0
+    at_risk   = 0
+
+    for u in users:
+        income       = u.income_amount or 0
+        user_spent   = sum(e.amount for e in expenses if e.user_id == u.id)
+        if income <= 0:
+            balanced += 1
+            continue
+        ratio = user_spent / income
+        if ratio < 0.4:
+            savers    += 1
+        elif ratio < 0.7:
+            balanced  += 1
+        elif ratio < 0.9:
+            impulsive += 1
+        else:
+            at_risk   += 1
+
+    return [
+        { "label": "Savers",    "value": savers,    "color": "#2DD4BF", "desc": "Consistently under budget, high savings rate" },
+        { "label": "Balanced",  "value": balanced,  "color": "#6366F1", "desc": "Moderate spending, occasional alerts" },
+        { "label": "Impulsive", "value": impulsive, "color": "#F59E0B", "desc": "Frequent unplanned purchases detected" },
+        { "label": "At-Risk",   "value": at_risk,   "color": "#ef4444", "desc": "Exceeding budget, multiple alerts flagged" },
+    ]
+
+@app.get("/admin/reports")
+def admin_reports(
+    current_user: models.User = Depends(get_current_user),
+    db:           Session     = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    expenses = db.query(models.Expense).all()
+    users    = db.query(models.User).all()
+
+    # Group expenses by month
+    monthly = {}
+    for e in expenses:
+        try:
+            dt    = datetime.fromisoformat(str(e.timestamp))
+            month = dt.strftime("%Y-%m")
+        except:
+            month = "Unknown"
+
+        if month not in monthly:
+            monthly[month] = {
+                "total":      0,
+                "user_ids":   set(),
+                "categories": {},
+                "alerts":     0,
+            }
+        monthly[month]["total"]    += e.amount
+        monthly[month]["user_ids"].add(e.user_id)
+
+        cat_label = e.category.label if e.category else "Other"
+        monthly[month]["categories"][cat_label] = (
+            monthly[month]["categories"].get(cat_label, 0) + e.amount
+        )
+
+    # Build per-user income map
+    income_map = { u.id: (u.income_amount or 0) for u in users }
+
+    result = []
+    for month in sorted(monthly.keys()):
+        data         = monthly[month]
+        total        = data["total"]
+        active_users = len(data["user_ids"])
+        avg_spend    = round(total / active_users, 2) if active_users > 0 else 0
+
+        # Savings = sum of income for active users minus their total spend
+        total_income  = sum(income_map.get(uid, 0) for uid in data["user_ids"])
+        savings       = max(0, total_income - total)
+
+        # Top category
+        top_category = max(data["categories"], key=data["categories"].get) if data["categories"] else "N/A"
+
+        # Alerts = users who spent more than 80% of income that month
+        alerts = 0
+        for uid in data["user_ids"]:
+            user_month_spend = sum(
+                e.amount for e in expenses
+                if e.user_id == uid and
+                datetime.fromisoformat(str(e.timestamp)).strftime("%Y-%m") == month
+            )
+            income = income_map.get(uid, 0)
+            if income > 0 and user_month_spend / income > 0.8:
+                alerts += 1
+
+        result.append({
+            "month":       month,
+            "users":       active_users,
+            "totalSpend":  f"₱{total:,.2f}",
+            "avgSpend":    f"₱{avg_spend:,.2f}",
+            "alerts":      alerts,
+            "savings":     f"₱{savings:,.2f}",
+            "topCategory": top_category,
+        })
+
+    return result
