@@ -732,3 +732,137 @@ def smart_purchase_check(
         "balance_after":   after_purchase,
         "purchase_amount": data.amount,
     }
+    
+# ── ADMIN ─────────────────────────────────────────────────
+def require_admin(current_user: models.User = Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+@app.get("/admin/reports")
+def admin_reports(
+    admin: models.User = Depends(require_admin),
+    db:    Session = Depends(get_db)
+):
+    expenses = db.query(models.Expense).all()
+
+    # Group by month
+    monthly = {}
+    for e in expenses:
+        month = str(e.created_at)[:7]  # "2024-01"
+        if month not in monthly:
+            monthly[month] = {
+                "month":       month,
+                "users":       set(),
+                "totalSpend":  0,
+                "alerts":      0,
+                "savings":     0,
+                "categories":  {},
+            }
+        monthly[month]["users"].add(e.user_id)
+        monthly[month]["totalSpend"] += e.amount
+        cat = e.category.label if e.category else "Other"
+        monthly[month]["categories"][cat] = (
+            monthly[month]["categories"].get(cat, 0) + e.amount
+        )
+
+    # Count alerts per month
+    alerts = db.query(models.Alert).all()
+    for a in alerts:
+        month = str(a.created_at)[:7]
+        if month in monthly:
+            monthly[month]["alerts"] += 1
+
+    # Count savings per month
+    goals = db.query(models.SavingsGoal).all()
+    for g in goals:
+        month = str(g.created_at)[:7]
+        if month in monthly:
+            monthly[month]["savings"] += g.current_amount
+
+    result = []
+    for month, data in sorted(monthly.items()):
+        user_count = len(data["users"])
+        total      = data["totalSpend"]
+        top_cat    = max(data["categories"], key=data["categories"].get) \
+                     if data["categories"] else "N/A"
+        result.append({
+            "month":       month,
+            "users":       user_count,
+            "totalSpend":  f"₱{total:,.2f}",
+            "avgSpend":    f"₱{(total / user_count):,.2f}" if user_count > 0 else "₱0.00",
+            "alerts":      data["alerts"],
+            "savings":     f"₱{data['savings']:,.2f}",
+            "topCategory": top_cat,
+        })
+
+    return result
+
+
+@app.get("/admin/ml-insights")
+def admin_ml_insights(
+    admin: models.User = Depends(require_admin),
+    db:    Session = Depends(get_db)
+):
+    expenses = db.query(models.Expense).all()
+
+    # Build category totals
+    category_totals = {}
+    for e in expenses:
+        if e.category:
+            key   = e.category.key
+            label = e.category.label
+            color = e.category.color
+            if key not in category_totals:
+                category_totals[key] = {
+                    "key":   key,
+                    "label": label,
+                    "color": color,
+                    "total": 0,
+                }
+            category_totals[key]["total"] += e.amount
+
+    category_data = sorted(
+        category_totals.values(),
+        key=lambda x: x["total"],
+        reverse=True
+    )
+
+    total_users    = db.query(models.User).count()
+    total_expenses = sum(e.amount for e in expenses)
+    total_alerts   = db.query(models.Alert).count()
+
+    return {
+        "total_users":    total_users,
+        "total_expenses": total_expenses,
+        "total_alerts":   total_alerts,
+        "category_data":  category_data,
+    }
+    
+    
+@app.get("/admin/users")
+def admin_users(
+    admin: models.User = Depends(require_admin),
+    db:    Session = Depends(get_db)
+):
+    users = db.query(models.User).all()
+
+    result = []
+    for u in users:
+        # Get latest ML insight for this user
+        insight = db.query(models.MLInsight).filter(
+            models.MLInsight.user_id == u.id
+        ).first()
+
+        result.append({
+            "id":           u.id,
+            "name":         u.first_name or u.username,
+            "email":        u.email,
+            "income_type":  u.income_type,
+            "income_cycle": u.income_cycle,
+            "date_joined":  str(u.created_at),
+            "cluster":      insight.user_cluster  if insight else "Unknown",
+            "risk_level":   insight.risk_level    if insight else "low",
+        })
+
+    return result
