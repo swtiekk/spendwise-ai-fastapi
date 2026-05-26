@@ -241,5 +241,9 @@ Steve Drylle Sarino
 - CORS is set to allow all origins (`*`) and should be restricted in production
 
 ## Screenshots
-![ Screenshots ](docs/Screenshot 2026-05-26 145805.png)
-![Screenshots](Screenshot 2026-05-26 145733.png) ![alt text](<Screenshot 2026-05-26 144422.png>) ![alt text](<Screenshot 2026-05-26 144436.png>) ![alt text](<Screenshot 2026-05-26 145638.png>) ![alt text](<Screenshot 2026-05-26 145711.png>)
+![Screenshot](docs/sc4.png)
+![Screenshot](docs/sc2.png)
+![Screenshot](docs/sc3.png)
+![Screenshot](docs/sc5.png)
+![Screenshot](docs/sc6.png)
+![Screenshot](docs/sc1.png)
