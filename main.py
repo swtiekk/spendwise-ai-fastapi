@@ -33,9 +33,13 @@ app = FastAPI(
 )
 
 # ── CORS ──────────────────────────────────────────────────
+# ✅ CORRECT
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://spendwise-ai-admin-indol.vercel.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -174,10 +178,27 @@ def require_admin(current_user: models.User = Depends(get_current_user)):
     return current_user
 
 # ── Startup ───────────────────────────────────────────────
+def seed_admin(db: Session):
+    existing = db.query(models.User).filter(
+        models.User.username == "admin"
+    ).first()
+    if not existing:
+        admin = models.User(
+            username        = "admin",
+            email           = "admin",
+            first_name      = "Admin",
+            hashed_password = hash_password("admin"),
+            is_admin        = True,
+        )
+        db.add(admin)
+        db.commit()
+        print("Admin user seeded.")
+
 @app.on_event("startup")
 def startup():
     db = next(get_db())
     seed_categories(db)
+    seed_admin(db)      
 
 # ── Root ──────────────────────────────────────────────────
 @app.get("/")
