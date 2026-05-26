@@ -39,6 +39,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "https://spendwise-ai-admin-indol.vercel.app",
+        "https://spendwise-ai-fastapi-zic2.onrender.com",
+        "*",
     ],
     allow_credentials=True,
     allow_methods=["*"],
