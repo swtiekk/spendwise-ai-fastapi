@@ -31,13 +31,7 @@ SpendWise AI is an AI-powered personal finance management system. The FastAPI ba
 | Machine Learning | scikit-learn, pandas, numpy |
 | Deployment | Render (`web: uvicorn main:app --host 0.0.0.0 --port $PORT`) |
 
-## Entity Relationship Diagram
 
-![SpendWise AI ERD](docs/ERD.drawio.png)
-
-## System Architecture Diagram
-
-![System Architecture](docs/system.png)
 
 ## System Architecture
 
@@ -245,3 +239,7 @@ Steve Drylle Sarino
 - ML models are trained on synthetic data and may not generalize to all user profiles
 - `SECRET_KEY` is hardcoded in `main.py` and should be moved to environment variables for production
 - CORS is set to allow all origins (`*`) and should be restricted in production
+
+## Screenshots
+![ Screenshots ](docs/Screenshot 2026-05-26 145805.png)
+![Screenshots](Screenshot 2026-05-26 145733.png) ![alt text](<Screenshot 2026-05-26 144422.png>) ![alt text](<Screenshot 2026-05-26 144436.png>) ![alt text](<Screenshot 2026-05-26 145638.png>) ![alt text](<Screenshot 2026-05-26 145711.png>)
