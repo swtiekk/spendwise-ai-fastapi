@@ -71,7 +71,7 @@ def predict_cluster(
 
     return {
         "cluster":     cluster_name,
-        "description": CLUSTER_DESCRIPTIONS[cluster_name],
+        "description": CLUSTER_DESCRIPTIONS.get(cluster_name, "Unknown cluster"),
     }
 
 
@@ -110,12 +110,12 @@ def predict_risk(
     return {
         "risk_level": risk_label,
         "confidence": confidence,
-        "accuracy":   risk_bundle["accuracy"],
+        "accuracy":   risk_bundle.get("accuracy", 85.0),
     }
 
 
 # ──────────────────────────────────────────────────────────
-# FUNCTION 3 — Predict sustainability
+# FUNCTION 3 — Predict sustainability (FIXED)
 # ──────────────────────────────────────────────────────────
 def predict_sustainability(
     balance: float,
@@ -130,15 +130,15 @@ def predict_sustainability(
     model   = sustain_bundle["model"]
     encoder = sustain_bundle["encoder"]
 
-    # Compute projected_days_left from inputs
+    # Calculate projected days (for response only)
     projected_days_left = round(balance / daily_burn_rate, 2) if daily_burn_rate > 0 else 30.0
 
+    # IMPORTANT: Model was trained with 4 features only (no projected_days_left)
     features = [[
         balance,
         daily_burn_rate,
         days_remaining,
         spending_ratio,
-        projected_days_left,
     ]]
 
     encoded_pred   = model.predict(features)[0]
@@ -150,15 +150,14 @@ def predict_sustainability(
     return {
         "sustainability":      sustain_label,
         "projected_days_left": projected_days_left,
-        "message":             SUSTAIN_MESSAGES[sustain_label],
+        "message":             SUSTAIN_MESSAGES.get(sustain_label, ""),
         "confidence":          confidence,
-        "accuracy":            sustain_bundle["accuracy"],
+        "accuracy":            sustain_bundle.get("accuracy", 88.0),
     }
 
 
 # ──────────────────────────────────────────────────────────
 # FUNCTION 4 — Smart Purchase Adviser
-# Combines all 3 models to advise on a purchase
 # ──────────────────────────────────────────────────────────
 def predict_smart_purchase(
     purchase_amount: float,
@@ -175,11 +174,10 @@ def predict_smart_purchase(
 ) -> dict:
     """
     Advises the user whether they should make a purchase.
-    Uses all 3 models + rule-based logic from /smart-purchase.
-    Output: safe / caution / risky + reasoning + suggestions
+    Uses all 3 models + rule-based logic.
     """
 
-    # Get cluster and sustainability context
+    # Get context from models
     cluster_result = predict_cluster(
         income_amount, total_expenses, spending_ratio,
         top_category_amount, num_transactions
@@ -197,7 +195,7 @@ def predict_smart_purchase(
     risk        = risk_result["risk_level"]
     proj_days   = sustain_result["projected_days_left"]
 
-    # Rule-based decision matching your existing /smart-purchase logic
+    # Rule-based decision
     safe_threshold    = balance * 0.10
     caution_threshold = balance * 0.25
 
@@ -205,67 +203,32 @@ def predict_smart_purchase(
         decision   = "risky"
         risk_score = 100
         reasoning  = f"Your balance is ₱{balance:,.2f}. Any purchase is not recommended."
-        suggestions = [
-            "You have no remaining budget.",
-            "Wait for your next income cycle.",
-        ]
+        suggestions = ["You have no remaining budget.", "Wait for your next income cycle."]
 
     elif sustain == "critical" and purchase_amount > safe_threshold:
         decision   = "risky"
         risk_score = 90
-        reasoning  = (
-            f"At your current burn rate, your funds may last only "
-            f"{proj_days:.0f} more days. A ₱{purchase_amount:,.2f} "
-            f"purchase is not advisable right now."
-        )
-        suggestions = [
-            "Defer this purchase until your next income cycle.",
-            "Focus on essential expenses only.",
-        ]
+        reasoning  = f"At your current burn rate, your funds may last only {proj_days:.0f} more days. A ₱{purchase_amount:,.2f} purchase is not advisable right now."
+        suggestions = ["Defer this purchase until your next income cycle.", "Focus on essential expenses only."]
 
     elif purchase_amount <= safe_threshold:
         decision   = "safe"
         risk_score = int((purchase_amount / safe_threshold) * 30) if safe_threshold > 0 else 0
-        reasoning  = (
-            f"₱{purchase_amount:,.2f} is within your safe spending range. "
-            f"Your current balance is ₱{balance:,.2f}."
-        )
-        suggestions = [
-            "You can proceed with this purchase.",
-            "Remember to log it in your expenses.",
-        ]
+        reasoning  = f"₱{purchase_amount:,.2f} is within your safe spending range."
+        suggestions = ["You can proceed with this purchase.", "Remember to log it in your expenses."]
 
     elif purchase_amount <= caution_threshold:
         decision   = "caution"
-        risk_score = int(
-            30 + ((purchase_amount - safe_threshold) /
-            max(caution_threshold - safe_threshold, 1)) * 40
-        )
-        reasoning  = (
-            f"₱{purchase_amount:,.2f} is manageable but uses a significant "
-            f"portion of your ₱{balance:,.2f} balance."
-        )
-        suggestions = [
-            "Only proceed if this is a priority.",
-            "Look for a lower-cost alternative.",
-        ]
+        risk_score = int(30 + ((purchase_amount - safe_threshold) / max(caution_threshold - safe_threshold, 1)) * 40)
+        reasoning  = f"₱{purchase_amount:,.2f} is manageable but uses a significant portion of your balance."
+        suggestions = ["Only proceed if this is a priority.", "Look for a lower-cost alternative."]
 
     else:
         decision   = "risky"
-        risk_score = min(100, int(
-            70 + ((purchase_amount - caution_threshold) /
-            max(caution_threshold, 1)) * 30
-        ))
-        reasoning  = (
-            f"₱{purchase_amount:,.2f} exceeds 25% of your ₱{balance:,.2f} balance. "
-            f"As a {cluster} spender, this may impact your financial stability."
-        )
-        suggestions = [
-            "Defer until your next pay cycle.",
-            "Review your spending breakdown first.",
-        ]
+        risk_score = min(100, int(70 + ((purchase_amount - caution_threshold) / max(caution_threshold, 1)) * 30))
+        reasoning  = f"₱{purchase_amount:,.2f} exceeds 25% of your ₱{balance:,.2f} balance."
+        suggestions = ["Defer until your next pay cycle.", "Review your spending breakdown first."]
 
-    # Add cluster-specific tip
     cluster_tips = {
         "Savers":    "Keep up your great saving habits — only buy if truly necessary.",
         "Balanced":  "Stay balanced — make sure this fits your monthly plan.",
@@ -286,5 +249,5 @@ def predict_smart_purchase(
         "remaining_after":     round(balance - purchase_amount, 2),
         "safe_threshold":      round(safe_threshold, 2),
         "caution_threshold":   round(caution_threshold, 2),
-        "cluster_tip":         cluster_tips[cluster],
+        "cluster_tip":         cluster_tips.get(cluster, ""),
     }

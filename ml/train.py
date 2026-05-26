@@ -17,7 +17,8 @@ from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report
+from imblearn.over_sampling import SMOTE   # Fix 3: SMOTE for imbalance
 
 # ── Paths ──────────────────────────────────────────────────
 BASE_DIR           = os.path.dirname(os.path.abspath(__file__))
@@ -41,8 +42,6 @@ print(f"      Sustain labels : {df['sustainability_label'].value_counts().to_dic
 
 # ══════════════════════════════════════════════════════════
 # MODEL 1 — Spending Behavior Clustering (K-Means)
-# Input  : income, expenses, ratio, top category, num txns
-# Output : Savers / Balanced / Impulsive / At-Risk
 # ══════════════════════════════════════════════════════════
 print("\n" + "-"*55)
 print("  MODEL 1: Spending Behavior Clustering (K-Means)")
@@ -58,19 +57,15 @@ CLUSTER_FEATURES = [
 
 X_cluster = df[CLUSTER_FEATURES].values
 
-# Scale features — K-Means is distance-based so scaling matters
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X_cluster)
 
-# Train K-Means with 4 clusters
 kmeans = KMeans(n_clusters=4, random_state=42, n_init=10, max_iter=300)
 kmeans.fit(X_scaled)
 
-# Map cluster IDs to label names by matching with known cluster_label column
 cluster_df = df.copy()
 cluster_df["kmeans_id"] = kmeans.labels_
 
-# For each K-Means cluster, find the majority true label
 label_map = {}
 for cluster_id in range(4):
     subset       = cluster_df[cluster_df["kmeans_id"] == cluster_id]
@@ -79,14 +74,12 @@ for cluster_id in range(4):
 
 print(f"  Cluster mapping : {label_map}")
 
-# Evaluate: compare predicted labels to true labels
 predicted_labels = [label_map[c] for c in kmeans.labels_]
 correct          = sum(p == t for p, t in zip(predicted_labels, df["cluster_label"]))
 cluster_accuracy = round(correct / len(df) * 100, 2)
 print(f"  Label match accuracy : {cluster_accuracy}%")
 print(f"  Inertia (lower=better): {round(kmeans.inertia_, 2)}")
 
-# Save
 cluster_bundle = {
     "model":     kmeans,
     "scaler":    scaler,
@@ -101,8 +94,6 @@ print(f"  Saved → {CLUSTER_MODEL_PATH}")
 
 # ══════════════════════════════════════════════════════════
 # MODEL 2 — Risk Classification (Decision Tree)
-# Input  : balance, burn rate, days remaining, ratio, savings progress
-# Output : safe / caution / risky
 # ══════════════════════════════════════════════════════════
 print("\n" + "-"*55)
 print("  MODEL 2: Risk Classification (Decision Tree)")
@@ -119,24 +110,26 @@ RISK_FEATURES = [
 X_risk = df[RISK_FEATURES].values
 y_risk = df["risk_label"].values
 
-# Encode string labels → integers
 le_risk = LabelEncoder()
 y_risk_encoded = le_risk.fit_transform(y_risk)
 print(f"  Classes : {list(le_risk.classes_)}")
 
-# Train / test split (80/20)
 X_train, X_test, y_train, y_test = train_test_split(
     X_risk, y_risk_encoded, test_size=0.2, random_state=42, stratify=y_risk_encoded
 )
-print(f"  Train samples : {len(X_train)}, Test samples : {len(X_test)}")
 
-# Train Decision Tree
+# Fix 3: Apply SMOTE to handle class imbalance
+sm = SMOTE(random_state=42)
+X_train, y_train = sm.fit_resample(X_train, y_train)
+print(f"  After SMOTE → Train samples : {len(X_train)}")
+
+# Fix 2: Reduced complexity to prevent overfitting
 risk_model = DecisionTreeClassifier(
-    max_depth=8,
-    min_samples_split=5,
-    min_samples_leaf=2,
+    max_depth=4,           # was 8
+    min_samples_split=10,  # was 5
+    min_samples_leaf=5,    # was 2
     random_state=42,
-    class_weight="balanced",  # handle class imbalance
+    class_weight="balanced",
 )
 risk_model.fit(X_train, y_train)
 
@@ -150,13 +143,11 @@ print(f"  CV accuracy     : {round(cv_scores.mean() * 100, 2)}% ± {round(cv_sco
 print(f"\n  Classification Report:")
 print(classification_report(y_test, y_pred, target_names=le_risk.classes_))
 
-# Feature importance
 importances = risk_model.feature_importances_
 print("  Feature importances:")
 for feat, imp in sorted(zip(RISK_FEATURES, importances), key=lambda x: -x[1]):
     print(f"    {feat:<30} {round(imp * 100, 2)}%")
 
-# Save
 risk_bundle = {
     "model":    risk_model,
     "encoder":  le_risk,
@@ -171,36 +162,31 @@ print(f"\n  Saved → {RISK_MODEL_PATH}")
 
 # ══════════════════════════════════════════════════════════
 # MODEL 3 — Sustainability Prediction (Decision Tree)
-# Input  : balance, burn rate, days remaining, ratio, projected days
-# Output : on_track / at_risk / critical
 # ══════════════════════════════════════════════════════════
 print("\n" + "-"*55)
 print("  MODEL 3: Sustainability Prediction (Decision Tree)")
 print("-"*55)
 
+# Fix 1: Removed leaky feature "projected_days_left"
 SUSTAIN_FEATURES = [
     "balance",
     "daily_burn_rate",
     "days_remaining",
     "spending_ratio",
-    "projected_days_left",
 ]
 
 X_sustain = df[SUSTAIN_FEATURES].values
 y_sustain = df["sustainability_label"].values
 
-# Encode
 le_sustain = LabelEncoder()
 y_sustain_encoded = le_sustain.fit_transform(y_sustain)
 print(f"  Classes : {list(le_sustain.classes_)}")
 
-# Train / test split
 X_train_s, X_test_s, y_train_s, y_test_s = train_test_split(
     X_sustain, y_sustain_encoded, test_size=0.2, random_state=42, stratify=y_sustain_encoded
 )
 print(f"  Train samples : {len(X_train_s)}, Test samples : {len(X_test_s)}")
 
-# Train
 sustain_model = DecisionTreeClassifier(
     max_depth=8,
     min_samples_split=5,
@@ -220,13 +206,11 @@ print(f"  CV accuracy     : {round(cv_scores_s.mean() * 100, 2)}% ± {round(cv_s
 print(f"\n  Classification Report:")
 print(classification_report(y_test_s, y_pred_s, target_names=le_sustain.classes_))
 
-# Feature importance
 importances_s = sustain_model.feature_importances_
 print("  Feature importances:")
 for feat, imp in sorted(zip(SUSTAIN_FEATURES, importances_s), key=lambda x: -x[1]):
     print(f"    {feat:<30} {round(imp * 100, 2)}%")
 
-# Save
 sustain_bundle = {
     "model":    sustain_model,
     "encoder":  le_sustain,
